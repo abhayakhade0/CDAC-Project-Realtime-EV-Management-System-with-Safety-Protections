@@ -1,0 +1,110 @@
+
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Professional EV BMS Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+body{margin:0;font-family:Segoe UI;background:#0b1220;color:#eef}
+header{padding:16px;background:#111c30;text-align:center;font-size:28px;font-weight:700}
+.wrap{padding:16px}
+.top{display:grid;grid-template-columns:300px repeat(4,1fr);gap:16px}
+.card{background:#16233b;border-radius:14px;padding:16px;box-shadow:0 0 12px rgba(0,0,0,.4)}
+.metric{font-size:28px;font-weight:bold;color:#55e7a4}
+canvas{max-width:100%}
+.battery{width:140px;height:280px;border:5px solid #fff;border-radius:16px;position:relative;margin:auto}
+.tip{position:absolute;top:-18px;left:45px;width:40px;height:12px;background:#fff;border-radius:4px}
+.fill{position:absolute;bottom:0;width:100%;height:0;background:linear-gradient(#36d46d,#8cff66);transition:.5s}
+.status{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.led{width:18px;height:18px;border-radius:50%;background:#700;display:inline-block;margin-right:8px}
+.on{background:#2ecc71}.off{background:#c0392b}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+#alerts{min-height:120px}
+#log{height:180px;overflow:auto;background:#08111f;padding:10px;font-family:monospace}
+</style></head><body>
+<header>EV Battery Monitoring System</header>
+<div class="wrap">
+<div class="top">
+<div class="card">
+<div class="battery"><div class="tip"></div><div id="fill" class="fill"></div></div>
+<h2 style="text-align:center">SOC <span id="soc">0%</span></h2>
+</div>
+<div class="card"><h3>SOH</h3><div id="soh" class="metric">--%</div></div>
+<div class="card"><h3>Voltage</h3><div id="voltage" class="metric">-- V</div></div>
+<div class="card"><h3>Current</h3><div id="current" class="metric">-- A</div></div>
+<div class="card"><h3>Power</h3><div id="power" class="metric">-- W</div></div>
+</div>
+
+<div class="grid2">
+<div class="card"><canvas id="vChart"></canvas></div>
+<div class="card"><canvas id="tChart"></canvas></div>
+<div class="card"><canvas id="cChart"></canvas></div>
+<div class="card"><canvas id="pChart"></canvas></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+<h3>System Status</h3>
+<div class="status">
+<div><span id="fanLed" class="led off"></span>Fan</div>
+<div><span id="buzzLed" class="led off"></span>Buzzer</div>
+<div><span id="motorLed" class="led off"></span>Motor</div>
+<div><span id="safeLed" class="led off"></span>Safe</div>
+<div><span id="mqttLed" class="led off"></span>MQTT</div>
+</div>
+</div>
+
+<div class="grid2">
+<div class="card" id="alerts"><h3>Faults</h3><ul id="alist"><li>No Faults</li></ul></div>
+<div class="card"><h3>Live MQTT Data</h3><div id="log"></div></div>
+</div>
+</div>
+<script>
+const topic="ev/battery/yourUniqueId123";
+const statusTopic="ev/battery/status";
+const client=mqtt.connect("wss://broker.hivemq.com:8884/mqtt");
+let lastMessageTime=0;
+
+const mk=(id,l)=>new Chart(document.getElementById(id),{type:'line',data:{labels:[],datasets:[{label:l,data:[]}]},options:{animation:false,responsive:true}});
+const vc=mk("vChart","Voltage"),tc=mk("tChart","Temperature"),cc=mk("cChart","Current"),pc=mk("pChart","Power");
+
+function push(ch,v){if(ch.data.labels.length>20){ch.data.labels.shift();ch.data.datasets[0].data.shift()}ch.data.labels.push("");ch.data.datasets[0].data.push(v);ch.update();}
+function led(id,on){document.getElementById(id).className="led "+(on?"on":"off")}
+function txt(id,v){document.getElementById(id).textContent=v}
+function log(s){let d=document.getElementById("log");d.innerHTML+=s+"<br>";d.scrollTop=d.scrollHeight;}
+
+function clearDashboard(){
+ txt("soc","--%"); txt("soh","--%"); txt("voltage","-- V"); txt("current","-- A"); txt("power","-- W");
+ document.getElementById("fill").style.height="0%";
+ document.getElementById("alist").innerHTML="<li>Device Offline</li>";
+ led("fanLed",0);led("buzzLed",0);led("motorLed",0);led("safeLed",0);led("mqttLed",0);
+}
+
+client.on("connect",()=>{
+ led("mqttLed",1);
+ client.subscribe(topic);
+ client.subscribe(statusTopic);
+});
+
+client.on("message",(t,m)=>{
+ if(t===statusTopic){
+   if(m.toString()==="offline"){clearDashboard();}
+   else{led("mqttLed",1);}
+   return;
+ }
+ lastMessageTime=Date.now();
+ let d=JSON.parse(m.toString());
+ txt("soc",d.soc+"%");
+ document.getElementById("fill").style.height=d.soc+"%";
+ txt("soh",d.soh+" %");txt("voltage",d.voltage+" V");txt("current",d.current+" A");txt("power",d.power+" W");
+ push(vc,d.voltage);push(tc,d.temperature);push(cc,d.current);push(pc,d.power);
+ led("fanLed",d.fan);led("buzzLed",d.buzzer);led("motorLed",d.safe);led("safeLed",d.safe);
+ let a=[];if(d.currentFault)a.push("Over Current");if(d.tempFault)a.push("High Temperature");if(d.smokeFault)a.push("Smoke Detected");if(!d.safe)a.push("System Unsafe");
+ document.getElementById("alist").innerHTML=a.length?a.map(x=>"<li>"+x+"</li>").join(""):"<li>No Faults</li>";
+ log(m.toString());
+});
+
+setInterval(()=>{
+ if(lastMessageTime && Date.now()-lastMessageTime>10000){
+   clearDashboard();
+ }
+},1000);
+</script></body></html>
